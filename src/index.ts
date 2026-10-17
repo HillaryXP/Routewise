@@ -13,11 +13,11 @@ const app = new Hono();
 app.use("*", cors({ origin: "*", exposeHeaders: ["PAYMENT-REQUIRED", "PAYMENT-RESPONSE", "X-PAYMENT-RESPONSE"] }));
 
 // ---- x402 paywall (config via env) ------------------------------------------------------------
-const PAY_TO_SOL = process.env.PAY_TO_SOL; // Solana address that receives USDC
-const PAY_TO_EVM = process.env.PAY_TO_EVM; // optional EVM address (Base)
-const SOL_NETWORK = process.env.X402_SOL_NETWORK ?? "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"; // devnet by default
-const EVM_NETWORK = process.env.X402_EVM_NETWORK ?? "eip155:84532"; // Base Sepolia by default
-const FACILITATOR_URL = process.env.FACILITATOR_URL ?? "https://x402.org/facilitator";
+const PAY_TO_SOL = process.env.PAY_TO_SOL?.trim(); // Solana address that receives USDC
+const PAY_TO_EVM = process.env.PAY_TO_EVM?.trim(); // optional EVM address (Base)
+const SOL_NETWORK = process.env.X402_SOL_NETWORK?.trim() || "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1"; // devnet by default
+const EVM_NETWORK = process.env.X402_EVM_NETWORK?.trim() || "eip155:84532"; // Base Sepolia by default
+const FACILITATOR_URL = process.env.FACILITATOR_URL?.trim() || "https://x402.org/facilitator";
 const PRICES = {
   rates: process.env.PRICE_RATES ?? "$0.005",
   route: process.env.PRICE_ROUTE ?? "$0.01",
@@ -82,6 +82,50 @@ app.post("/mcp", async (c) => {
   return out ? c.json(out) : c.body(null, 202);
 });
 app.get("/mcp", (c) => c.json({ error: "Use POST for MCP over streamable HTTP" }, 405));
+
+// ---- agent-readable contract (free) ------------------------------------------------------------
+const cur = { type: "string", enum: [...CURRENCIES] };
+const payResp = { "402": { description: "Payment required (x402). Pay in USDC on Solana, then retry with the payment header." } };
+app.get("/openapi.json", (c) => {
+  const base = process.env.PUBLIC_URL?.trim() || new URL(c.req.url).origin.replace(/^http:/, "https:");
+  return c.json({
+    openapi: "3.0.3",
+    info: {
+      title: "Routewise",
+      version: "0.1.0",
+      description:
+        "Best way to cash out USDC into local currency. Official rate, street (P2P) rate when available, ranked routes by net amount received, and a convert-now-or-wait read. Pay per request with x402 (USDC on Solana). Fees are estimates, not live quotes.",
+    },
+    servers: [{ url: base }],
+    paths: {
+      "/v1/rates": { get: { operationId: "rates", summary: `Official vs street rate and spread (${PRICES.rates})`,
+        parameters: [{ name: "currency", in: "query", required: true, schema: cur }],
+        responses: { "200": { description: "Rates" }, ...payResp } } },
+      "/v1/route": { get: { operationId: "route", summary: `Ranked cash-out routes by net amount (${PRICES.route})`,
+        parameters: [{ name: "currency", in: "query", required: true, schema: cur },
+                     { name: "amount_usd", in: "query", required: true, schema: { type: "number", minimum: 0.01, maximum: 1000000 } }],
+        responses: { "200": { description: "Ranked routes and recommendation" }, ...payResp } } },
+      "/v1/timing": { get: { operationId: "timing", summary: `Convert now or wait? 14-day heuristic (${PRICES.timing})`,
+        parameters: [{ name: "currency", in: "query", required: true, schema: cur }],
+        responses: { "200": { description: "Action and stats" }, ...payResp } } },
+    },
+  });
+});
+app.get("/llms.txt", (c) => {
+  const base = process.env.PUBLIC_URL?.trim() || new URL(c.req.url).origin.replace(/^http:/, "https:");
+  return c.text(`# Routewise
+> Best way to cash out USDC into local currency (${CURRENCIES.join(", ")}). Pay per request with x402 (USDC on Solana). Fees are estimates, not live quotes.
+
+## How an agent uses it
+1. GET ${base}/v1/route?currency=NGN&amount_usd=200   (${PRICES.route}) -> ranked cash-out routes by net amount received
+2. GET ${base}/v1/rates?currency=NGN                  (${PRICES.rates}) -> official vs street rate and spread
+3. GET ${base}/v1/timing?currency=NGN                 (${PRICES.timing}) -> convert now or wait
+Each call returns HTTP 402 first; pay it (PayBox use_service handles this) and the data comes back.
+
+Contract: ${base}/openapi.json
+MCP: POST ${base}/mcp (tools: routewise_rates, routewise_route, routewise_timing)
+`);
+});
 
 // ---- meta -------------------------------------------------------------------------------------
 app.get("/health", (c) => c.json({ ok: true, paywall: paywallEnabled }));
