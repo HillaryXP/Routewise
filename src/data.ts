@@ -46,6 +46,9 @@ export type StreetRate = {
   source: string;
 };
 
+let lastStreetError = "";
+export const getLastStreetError = () => lastStreetError;
+
 // Median of the top ads where merchants BUY USDT for local currency (i.e. you sell).
 export async function getStreetRate(currency: string): Promise<StreetRate | null> {
   if (OFFLINE) {
@@ -57,20 +60,31 @@ export async function getStreetRate(currency: string): Promise<StreetRate | null
     return await cached(`street:${currency}`, 60_000, async () => {
       const j = await fetchJson("https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Origin: "https://p2p.binance.com",
+          Referer: "https://p2p.binance.com/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        },
         body: JSON.stringify({
           fiat: currency, page: 1, rows: 10, tradeType: "SELL", asset: "USDT",
           countries: [], proMerchantAds: false, shieldMerchantAds: false, publisherType: null, payTypes: [],
         }),
       });
       const prices: number[] = (j?.data ?? []).map((a: any) => Number(a?.adv?.price)).filter((n: number) => n > 0);
-      if (prices.length < 3) return null;
+      if (prices.length < 3) {
+        lastStreetError = `binance returned ${prices.length} usable ads (code=${j?.code}, message=${j?.message ?? "none"})`;
+        return null;
+      }
+      lastStreetError = "";
       prices.sort((a, b) => a - b);
       const mid = prices[Math.floor(prices.length / 2)];
       return { currency, sellUsdtPrice: mid, adsSampled: prices.length, source: "binance-p2p" };
     });
-  } catch {
-    return null; // caller degrades gracefully to official-only
+  } catch (e) {
+    lastStreetError = (e as Error).message; // caller degrades gracefully to official-only
+    return null;
   }
 }
 

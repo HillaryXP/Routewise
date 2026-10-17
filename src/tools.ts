@@ -1,5 +1,5 @@
 import { z } from "zod/v4";
-import { CURRENCIES, getHistory, getOfficialRates, getStreetRate } from "./data.js";
+import { CURRENCIES, getHistory, getLastStreetError, getOfficialRates, getStreetRate } from "./data.js";
 
 const currencyEnum = z.enum(CURRENCIES);
 
@@ -47,6 +47,7 @@ export async function rates(input: z.infer<typeof ratesInput>) {
           : `Official rate beats the street rate by ${round(-gapPct, 2)}% for ${input.currency}.`;
   } else {
     out.street = null;
+    out.street_error = getLastStreetError() || "unknown";
     out.headline = "Street rate unavailable right now; showing official rate only.";
   }
   return out;
